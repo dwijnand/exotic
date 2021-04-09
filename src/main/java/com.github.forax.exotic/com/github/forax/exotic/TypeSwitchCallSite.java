@@ -1,234 +1,180 @@
 package com.github.forax.exotic;
 
 import static com.github.forax.exotic.TypeSwitch.NO_MATCH;
-import static java.lang.invoke.MethodHandles.constant;
-import static java.lang.invoke.MethodHandles.dropArguments;
-import static java.lang.invoke.MethodHandles.guardWithTest;
+import static com.github.forax.exotic.TypeSwitch.NULL_MATCH;
+import static java.lang.invoke.MethodHandles.*;
 import static java.lang.invoke.MethodType.methodType;
 
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodHandles.Lookup;
 import java.lang.invoke.MethodType;
 import java.lang.invoke.MutableCallSite;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Objects;
 
-class TypeSwitchCallSite extends MutableCallSite {
-  static void validatePartialOrder(Class<?>[] typecases) {
-    int length = typecases.length;
-    if (length == 0 || length == 1) {
-      return;
-    }
-    HashMap<Class<?>, Class<?>> map = new HashMap<>();   //FIXME pre-size ??
-    for (int i = length; --i >= 0;) {
-      Class<?> typecase = typecases[i];
-      Objects.requireNonNull(typecase);
-      validateType(map, typecase);
-    }
+final class TypeSwitchCallSite extends MutableCallSite {
+  static void validatePartialOrder(Class<?>[] cases) {
+    if (cases.length < 2) return;
+    HashMap<Class<?>, Class<?>> map = new HashMap<>();
+    for (int i = cases.length; --i >= 0; )
+      validateClass(map, Objects.requireNonNull(cases[i]));
   }
 
-  private static void validateType(HashMap<Class<?>, Class<?>> map, Class<?> typecase) {
-    Class<?> conflictingCaseType = map.putIfAbsent(typecase, typecase);
-    if (conflictingCaseType != null) {
+  private static void validateClass(HashMap<Class<?>, Class<?>> map, Class<?> classCase) {
+    Class<?> conflictingCase = map.putIfAbsent(classCase, classCase);
+    if (conflictingCase != null)
       throw new IllegalStateException(
-          "Case " + conflictingCaseType.getName() + " matches a subtype of what case " +
-          typecase.getName() + " matches but is located after it");
-    }
-    validateSupertypes(map, typecase, typecase);
+          "Case " + conflictingCase.getName() + " matches a subtype of what case " +
+          classCase.getName() + " matches but is located after it");
+    validateParents(map, classCase, classCase);
   }
 
-  private static void validateSupertypes(HashMap<Class<?>, Class<?>> map, Class<?> type, Class<?> typecase) {
-    Class<?> superclass = type.getSuperclass();
-    if (superclass == null && type != Object.class) {
-      superclass = Object.class;  // interfaces are subtypes of Object
+  private static void validateParents(HashMap<Class<?>, Class<?>> map, Class<?> parent, Class<?> classCase) {
+    if (parent == null || map.putIfAbsent(parent, classCase) != null || parent == Object.class) return;
+    validateParents(map, parent.getSuperclass(), classCase);
+    for (Class<?> superinterface : parent.getInterfaces())
+      validateParents(map, superinterface, classCase);
+  }
+
+  private static abstract class Strategy {
+    abstract int index(Class<?> receiverClass);
+    abstract MethodHandle target();
+  }
+
+  private static final class IsInstanceStrategy extends Strategy {
+    private final WeakReference<?>[] refs;
+
+    IsInstanceStrategy(Class<?>[] cases) {
+      refs = createRefArray(cases);
     }
-    if (superclass != null && map.putIfAbsent(superclass, typecase) == null) {
-      validateSupertypes(map, superclass, typecase);
+
+    int index(Class<?> receiverClass) {
+      for (int i = 0; i < refs.length; i++) {
+        Class<?> case1 = (Class<?>) refs[i].get();
+        if (case1 != null && case1.isAssignableFrom(receiverClass)) return i;
+      }
+      return NO_MATCH;
     }
-    for (Class<?> superinterface : type.getInterfaces()) {
-      if (map.putIfAbsent(superinterface, typecase) == null) {
-        validateSupertypes(map, superinterface, typecase);
+
+    MethodHandle target() {
+      MethodHandle next = constInt(NO_MATCH);
+      for (int i = refs.length; --i >= 0; ) {
+        Class<?> case1 = (Class<?>) refs[i].get();
+        if (case1 != null) next = guardWithTest(IS_INSTANCE.bindTo(case1), constInt(i), next);
+      }
+      return next;
+    }
+  }
+
+  private static final class ClassValueStrategy extends Strategy {
+    private static final MethodHandle GET;
+
+    static {
+      Lookup lookup = lookup();
+      try {
+        GET = lookup.findStatic(lookup.lookupClass(), "get", methodType(int.class, ClassValue.class, Object.class));
+      } catch (NoSuchMethodException | IllegalAccessException e) {
+        throw new ExceptionInInitializerError(e);
       }
     }
-  }
-  
-  private interface Strategy {
-    int index(Class<?> receiverClass);
-    MethodHandle target();
-    
-    static Strategy isInstance(Class<?>[] typecases) {
-      WeakReference<Class<?>>[] refs = createRefArray(typecases);
-      return new Strategy() {
-        @Override
-        public int index(Class<?> receiverClass) {
-          for(int i = 0; i < refs.length; i++) {
-            Class<?> typecase = refs[i].get();
-            if (typecase != null && typecase.isAssignableFrom(receiverClass)) {
-              return i;
-            }
-          }
-          return NO_MATCH;
-        }
-        @Override
-        public MethodHandle target() {
-          MethodHandle mh = dropArguments(constant(int.class, NO_MATCH), 0, Object.class);  
-          for(int i = refs.length; --i >= 0;) {
-            Class<?> typecase = refs[i].get();
-            if (typecase == null) {
-              continue;
-            }
-            mh = guardWithTest(IS_INSTANCE.bindTo(typecase),
-                dropArguments(constant(int.class, i), 0, Object.class),
-                mh);
-          }
-          return mh;
-        }
-      };
+
+    private final ClassValue<Integer> classValue;
+
+    ClassValueStrategy(Class<?>[] cases) {
+      classValue = createClassValue(cases);
     }
-    
-    static Strategy classValue(Class<?>[] typecases) {
-      ClassValue<Integer> classValue = createClassValue(typecases);
-      return new Strategy() {
-        @Override
-        public int index(Class<?> receiverClass) {
-          return classValue.get(receiverClass);
-        }
-        @Override
-        public MethodHandle target(/*Lookup lookup*/) {
-          return GET.bindTo(classValue);
-        }
-      };
-    } 
+
+    @SuppressWarnings("unused")
+    static int get(ClassValue<Integer> classValue, Object value) {
+      return classValue.get(value.getClass());
+    }
+
+    int index(Class<?> receiverClass) { return classValue.get(receiverClass); }
+    MethodHandle target()             { return GET.bindTo(classValue); }
   }
-  
-  static WeakReference<Class<?>>[] createRefArray(Class<?>[] typecases) {
+
+  static WeakReference<Class<?>>[] createRefArray(Class<?>[] cases) {
     @SuppressWarnings("unchecked")
-    WeakReference<Class<?>>[] refs = (WeakReference<Class<?>>[])new WeakReference<?>[typecases.length];
-    for(int i = 0; i < typecases.length; i++) {
-      refs[i] = new WeakReference<>(typecases[i]);
-    }
+    WeakReference<Class<?>>[] refs = (WeakReference<Class<?>>[]) new WeakReference<?>[cases.length];
+    for (int i = 0; i < cases.length; i++)
+      refs[i] = new WeakReference<>(cases[i]);
     return refs;
   }
-  
-  static ClassValue<Integer> createClassValue(Class<?>[] typecases) {
-    ThreadLocal<Integer> local = new ThreadLocal<>();
+
+  static ClassValue<Integer> createClassValue(Class<?>[] cases) {
+    ThreadLocal<Integer> local     = new ThreadLocal<>();
     ClassValue<Integer> classValue = new ClassValue<Integer>() {
-      @Override
       protected Integer computeValue(Class<?> type) {
         Integer index = local.get();
-        if (index != null) {  // injection
-          return index;
-        }
-        return computeFromSupertypes(type);
-      }
-
-      private Integer computeFromSupertypes(Class<?> type) {
-        int index = NO_MATCH;
+        if (index != null) return index;
         Class<?> superclass = type.getSuperclass();
-        if (superclass != null) {
-          index = get(superclass);
-        }
-        for(Class<?> supertype: type.getInterfaces()) {
+        index = superclass == null ? NO_MATCH : get(superclass);
+        for (Class<?> supertype: type.getInterfaces()) {
           int localIndex = get(supertype);
-          if (localIndex != NO_MATCH) {
-            index = (index == NO_MATCH)? localIndex: Math.min(index, localIndex);
-          }
+          if (localIndex != NO_MATCH)
+            index = index == NO_MATCH ? localIndex : Math.min(index, localIndex);
         }
         return index;
       }
     };
-    for(int i = 0; i < typecases.length; i++) {
-      local.set(i);  // inject value
-      classValue.get(typecases[i]);
+    for (int i = 0; i < cases.length; i++) {
+      local.set(i);
+      classValue.get(cases[i]);
     }
-    local.set(null);  // no injection anymore
+    local.remove();
     return classValue;
   }
-  
-  
+
   private static final MethodType OBJECT_TO_INT = methodType(int.class, Object.class);
-  private static final MethodHandle FALLBACK, TYPECHECK, NULLCHECK;
-  static final MethodHandle GET, IS_INSTANCE;
+          static final MethodHandle FALLBACK, IS_INSTANCE, NULLCHECK;
+
   static {
-    Lookup lookup = MethodHandles.lookup();
+    Lookup lookup = lookup();
     try {
-      FALLBACK = lookup.findVirtual(TypeSwitchCallSite.class, "fallback", OBJECT_TO_INT);
-      TYPECHECK = lookup.findStatic(TypeSwitchCallSite.class, "typecheck", methodType(boolean.class, Class.class, Object.class));
-      GET = lookup.findStatic(TypeSwitchCallSite.class, "get", methodType(int.class, ClassValue.class, Object.class));
-      NULLCHECK = lookup.findStatic(Objects.class, "isNull", methodType(boolean.class, Object.class));
-      IS_INSTANCE = lookup.findVirtual(Class.class, "isInstance", methodType(boolean.class, Object.class));
-    } catch(NoSuchMethodException | IllegalAccessException e) {
-      throw new AssertionError(e);
+      FALLBACK    = lookup.findVirtual(lookup.lookupClass(), "fallback", OBJECT_TO_INT);
+      IS_INSTANCE = lookup.findVirtual( Class.class,         "isInstance", methodType(boolean.class, Object.class));
+      NULLCHECK   = lookup.findStatic (Objects.class,        "isNull",     methodType(boolean.class, Object.class));
+    } catch (NoSuchMethodException | IllegalAccessException e) {
+      throw new ExceptionInInitializerError(e);
     }
-  }
-  
-  private static final int MAX_DEPTH = 8;
-  private static final int STRATEGY_CUT_OFF = 5;
-  
-  private final int depth;
-  private final TypeSwitchCallSite callsite;
-  private final Strategy strategy;
-  
-  private TypeSwitchCallSite(Strategy strategy) {
-    super(OBJECT_TO_INT);
-    this.depth = 0;
-    this.callsite = this;
-    this.strategy = strategy;
-    setTarget(FALLBACK.bindTo(this));
-  }
-  
-  private TypeSwitchCallSite(int depth, TypeSwitchCallSite callsite, Strategy strategy) {
-    super(OBJECT_TO_INT);
-    this.depth = depth;
-    this.callsite = callsite;
-    this.strategy = strategy;
-    setTarget(FALLBACK.bindTo(this));
   }
 
-  static TypeSwitchCallSite create(Class<?>[] typecases) {
-    for(Class<?> typecase: typecases) {
-      Objects.requireNonNull(typecase);
-    }
-    
-    Strategy strategy = (typecases.length < STRATEGY_CUT_OFF)?
-      Strategy.isInstance(typecases): Strategy.classValue(typecases);
-    return new TypeSwitchCallSite(strategy);
+  private final Strategy        strategy;
+  private final MutableCallSite topCallsite;
+  private final int             depth;
+
+  TypeSwitchCallSite(Strategy strategy, MutableCallSite topCallsite, int depth) {
+    super(OBJECT_TO_INT);
+    setTarget(FALLBACK.bindTo(this));
+    this.strategy    = strategy;
+    this.topCallsite = topCallsite == null ? this : topCallsite;
+    this.depth       = depth;
   }
-  
+
+  static TypeSwitchCallSite bootstrap(Class<?>[] cases) {
+    validatePartialOrder(cases);
+    Strategy strategy = cases.length < 5 ? new IsInstanceStrategy(cases) : new ClassValueStrategy(cases);
+    return new TypeSwitchCallSite(strategy, null, 0);
+  }
+
+  static MethodHandle wrapNullIfNecessary(boolean nullMatch, MethodHandle mh) {
+    return nullMatch ? guardWithTest(NULLCHECK, constInt(NULL_MATCH), mh) : mh;
+  }
+
   @SuppressWarnings("unused")
   private int fallback(Object value) {
     Class<?> receiverClass = value.getClass();
     int index = strategy.index(receiverClass);
-    
-    if (depth == MAX_DEPTH) {
-      setTarget(strategy.target());
-      return index;
+    if (depth == 8) {
+      topCallsite.setTarget(strategy.target());
+    } else {
+      MethodHandle next = new TypeSwitchCallSite(strategy, topCallsite, depth + 1).dynamicInvoker();
+      setTarget(guardWithTest(IS_INSTANCE.bindTo(receiverClass), constInt(index), next));
     }
-    
-    setTarget(guardWithTest(TYPECHECK.bindTo(receiverClass),
-        dropArguments(constant(int.class, index), 0, Object.class),
-        new TypeSwitchCallSite(depth + 1, callsite, strategy).dynamicInvoker()));
     return index;
   }
-  
-  @SuppressWarnings("unused")
-  private static boolean typecheck(Class<?> type, Object value) {
-    return value.getClass() == type;
-  }
-  
-  @SuppressWarnings("unused")
-  private static int get(ClassValue<Integer> classValue, Object value) {
-    return classValue.get(value.getClass());
-  } 
-  
-  static MethodHandle wrapNullIfNecessary(boolean nullMatch, MethodHandle mh) {
-    if (!nullMatch) {
-      return mh;
-    }
-    return guardWithTest(NULLCHECK,
-        dropArguments(constant(int.class, TypeSwitch.NULL_MATCH), 0, Object.class),
-        mh);
+
+  private static MethodHandle constInt(int value) {
+    return dropArguments(constant(int.class, value), 0, Object.class);
   }
 }
