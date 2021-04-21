@@ -7,16 +7,10 @@ import org.junit.jupiter.api.Test;
 
 @SuppressWarnings("static-method")
 class ConstantMemoizerExampleTests {
-  private static final ToIntFunction<Level> MEMOIZER =
-      ConstantMemoizer.intMemoizer(Level::ordinal, Level.class);
+  enum Level { LOW, HIGH }
+  private static final ToIntFunction<Level> MEMOIZER = ConstantMemoizer.intMemoizer(Level::ordinal, Level.class);
 
-  enum Level {
-    LOW,
-    HIGH
-  }
-
-  @Test
-  void test() {
+  @Test void test() {
     assertEquals(0, MEMOIZER.applyAsInt(Level.LOW));
     assertEquals(0, MEMOIZER.applyAsInt(Level.LOW));
     assertEquals(1, MEMOIZER.applyAsInt(Level.HIGH));

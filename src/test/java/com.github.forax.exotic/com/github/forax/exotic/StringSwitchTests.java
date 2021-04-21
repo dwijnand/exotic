@@ -1,51 +1,27 @@
 package com.github.forax.exotic;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static com.github.forax.exotic.StringSwitch.NO_MATCH;
+import static com.github.forax.exotic.StringSwitch.NULL_MATCH;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 
 @SuppressWarnings("static-method")
 class StringSwitchTests {
-  @Test
-  void simple() {
-    StringSwitch stringSwitch = StringSwitch.create(false, "foo", "bar");
-    assertAll( 
-        () -> assertEquals(0, stringSwitch.stringSwitch("foo")),
-        () -> assertEquals(0, stringSwitch.stringSwitch(new String("foo"))),
-        () -> assertEquals(1, stringSwitch.stringSwitch("bar")),
-        () -> assertEquals(1, stringSwitch.stringSwitch(new String("bar"))),
-        () -> assertEquals(StringSwitch.NO_MATCH, stringSwitch.stringSwitch("baz"))
-      );
-  }
-  
-  @Test
-  void nonNullSwitchCalledWithANull() {
-    StringSwitch stringSwitch = StringSwitch.create(false);
-    assertThrows(NullPointerException.class, () -> stringSwitch.stringSwitch(null));
-  }
-  
-  @Test
-  void nullCase() {
-    StringSwitch stringSwitch = StringSwitch.create(true, "foo");
-    assertAll(
-        () -> assertEquals(0, stringSwitch.stringSwitch("foo")),
-        () -> assertEquals(StringSwitch.NULL_MATCH, stringSwitch.stringSwitch(null)),
-        () -> assertEquals(StringSwitch.NO_MATCH, stringSwitch.stringSwitch(""))
-      );
-  }
-  
-  @Test
-  void aCaseCanNotBeNull() {
-    assertAll(
-        () -> assertThrows(NullPointerException.class, () -> StringSwitch.create(false, (String)null)),
-        () -> assertThrows(NullPointerException.class, () -> StringSwitch.create(true, (String)null))
-      );
-  }
-  
-  @Test
-  void casesArrayCanNotBeNull() {
-    assertThrows(NullPointerException.class, () -> StringSwitch.create(false, (String[])null));
-  }
+  private static StringSwitch newSwitch1() { return StringSwitch.create(false, "foo", "bar"); }
+  private static StringSwitch newSwitch2() { return StringSwitch.create(true);                }
+
+  @Test void simple1()   { assertEquals(0,                                newSwitch1().stringSwitch(           "foo" )); }
+  @Test void simple2()   { assertEquals(0,                                newSwitch1().stringSwitch(new String("foo"))); }
+  @Test void simple3()   { assertEquals(1,                                newSwitch1().stringSwitch(           "bar" )); }
+  @Test void simple4()   { assertEquals(1,                                newSwitch1().stringSwitch(new String("bar"))); }
+  @Test void simple5()   { assertEquals(NO_MATCH,                         newSwitch1().stringSwitch(           "baz" )); }
+  @Test void simpleNPE() { assertThrows(NullPointerException.class, () -> newSwitch1().stringSwitch(           null  )); }
+  @Test void nullCase1() { assertEquals(0,                                newSwitch2().stringSwitch(           "foo" )); }
+  @Test void nullCase2() { assertEquals(NULL_MATCH,                       newSwitch2().stringSwitch(           null  )); }
+  @Test void nullCase3() { assertEquals(NO_MATCH,                         newSwitch2().stringSwitch(           ""    )); }
+
+  @Test void aCaseCanNotBeNull1    () { assertThrows(NullPointerException.class, () -> StringSwitch.create(false, (String  ) null)); }
+  @Test void aCaseCanNotBeNull2    () { assertThrows(NullPointerException.class, () -> StringSwitch.create(true,  (String  ) null)); }
+  @Test void casesArrayCanNotBeNull() { assertThrows(NullPointerException.class, () -> StringSwitch.create(false, (String[]) null)); }
 }

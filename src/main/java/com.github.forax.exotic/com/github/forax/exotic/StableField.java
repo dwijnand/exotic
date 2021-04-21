@@ -89,14 +89,9 @@ public final class StableField {
    * @throws IllegalAccessError if the field is not accessible from the lookup.
    * @throws IllegalStateException if the argument of the getter is not constant.
    */
-  public static <T, V> Function<T, V> getter(
-      Lookup lookup, Class<T> declaringClass, String name, Class<V> type) {
-    Objects.requireNonNull(lookup);
-    Objects.requireNonNull(declaringClass);
-    Objects.requireNonNull(name);
-    Objects.requireNonNull(type);
-    MethodHandle getter = createGetter(lookup, declaringClass, name, type);
-    MethodHandle mh = new StableFieldCS(getter, Object.class).dynamicInvoker();
+  public static <T, V> Function<T, V> getter(Lookup lookup, Class<T> declaringClass, String name, Class<V> type) {
+    MethodHandle getter = createGetter(Objects.requireNonNull(lookup), Objects.requireNonNull(declaringClass), Objects.requireNonNull(name), Objects.requireNonNull(type));
+    MethodHandle mh     = new StableFieldCS(getter, Object.class).dynamicInvoker();
     return object -> {
       try {
         return (V) mh.invokeExact(object);
@@ -131,8 +126,7 @@ public final class StableField {
    * @throws IllegalAccessError if the field is not accessible from the lookup.
    * @throws IllegalStateException if the argument of the getter is not constant.
    */
-  public static <T> ToIntFunction<T> intGetter(
-      Lookup lookup, Class<T> declaringClass, String name) {
+  public static <T> ToIntFunction<T> intGetter(Lookup lookup, Class<T> declaringClass, String name) {
     Objects.requireNonNull(lookup);
     Objects.requireNonNull(declaringClass);
     Objects.requireNonNull(name);
@@ -172,8 +166,7 @@ public final class StableField {
    * @throws IllegalAccessError if the field is not accessible from the lookup.
    * @throws IllegalStateException if the argument of the getter is not constant.
    */
-  public static <T> ToLongFunction<T> longGetter(
-      Lookup lookup, Class<T> declaringClass, String name) {
+  public static <T> ToLongFunction<T> longGetter(Lookup lookup, Class<T> declaringClass, String name) {
     Objects.requireNonNull(lookup);
     Objects.requireNonNull(declaringClass);
     Objects.requireNonNull(name);
@@ -213,8 +206,7 @@ public final class StableField {
    * @throws IllegalAccessError if the field is not accessible from the lookup.
    * @throws IllegalStateException if the argument of the getter is not constant.
    */
-  public static <T> ToDoubleFunction<T> doubleGetter(
-      Lookup lookup, Class<T> declaringClass, String name) {
+  public static <T> ToDoubleFunction<T> doubleGetter(Lookup lookup, Class<T> declaringClass, String name) {
     Objects.requireNonNull(lookup);
     Objects.requireNonNull(declaringClass);
     Objects.requireNonNull(name);
@@ -229,16 +221,11 @@ public final class StableField {
     };
   }
 
-  private static <T, V> MethodHandle createGetter(
-      Lookup lookup, Class<T> declaringClass, String name, Class<V> type)
+  private static <T, V> MethodHandle createGetter(Lookup lookup, Class<T> declaringClass, String name, Class<V> type)
       throws NoSuchFieldError, IllegalAccessError {
-    try {
-      return lookup.findGetter(declaringClass, name, type);
-    } catch (NoSuchFieldException e) {
-      throw (NoSuchFieldError) new NoSuchFieldError().initCause(e);
-    } catch (IllegalAccessException e) {
-      throw (IllegalAccessError) new IllegalAccessError().initCause(e);
-    }
+    try { return lookup.findGetter(declaringClass, name, type); }
+    catch (  NoSuchFieldException e) { throw (  NoSuchFieldError) new   NoSuchFieldError().initCause(e); }
+    catch (IllegalAccessException e) { throw (IllegalAccessError) new IllegalAccessError().initCause(e); }
   }
 
   private static class StableFieldCS extends MutableCallSite {
@@ -247,20 +234,10 @@ public final class StableField {
     static {
       Lookup lookup = MethodHandles.lookup();
       try {
-        FALLBACK =
-            lookup.findVirtual(
-                StableFieldCS.class, "fallback", methodType(MethodHandle.class, Object.class));
-        VALUE_CHECK =
-            lookup.findStatic(
-                StableFieldCS.class,
-                "valueCheck",
-                methodType(boolean.class, Object.class, Object.class));
-        NOT_CONSTANT =
-            lookup.findStatic(
-                StableFieldCS.class, "notConstant", methodType(void.class, Object.class));
-      } catch (NoSuchMethodException | IllegalAccessException e) {
-        throw new AssertionError(e);
-      }
+        FALLBACK     = lookup.findVirtual(StableFieldCS.class, "fallback",    methodType(MethodHandle.class, Object.class));
+        VALUE_CHECK  = lookup.findStatic( StableFieldCS.class, "valueCheck",  methodType(     boolean.class, Object.class, Object.class));
+        NOT_CONSTANT = lookup.findStatic( StableFieldCS.class, "notConstant", methodType(        void.class, Object.class));
+      } catch (NoSuchMethodException | IllegalAccessException e) { throw new AssertionError(e); }
     }
 
     private final MethodHandle getter;
@@ -273,56 +250,26 @@ public final class StableField {
 
     @SuppressWarnings("unused")
     private MethodHandle fallback(Object o) throws Throwable {
-      Objects.requireNonNull(o);
-      Object result = getter.invoke(o);
-      MethodHandle constant =
-          dropArguments(constant(getter.type().returnType(), result), 0, Object.class)
-              .asType(type());
-      if (!Objects.equals(result, zero(getter.type().returnType()))) {
-        MethodHandle target =
-            MethodHandles.guardWithTest(
-                VALUE_CHECK.bindTo(o), constant, NOT_CONSTANT.asType(type()));
-        setTarget(target);
-      }
+      Object       result   = getter.invoke(Objects.requireNonNull(o));
+      MethodHandle constant = dropArguments(constant(getter.type().returnType(), result), 0, Object.class).asType(type());
+      if (!Objects.equals(result, zero(getter.type().returnType())))
+        setTarget(MethodHandles.guardWithTest(VALUE_CHECK.bindTo(o), constant, NOT_CONSTANT.asType(type())));
       return constant;
     }
 
     private static Object zero(Class<?> type) {
-      if (type == int.class) {
-        return 0;
-      }
-      if (type == long.class) {
-        return 0L;
-      }
-      if (type == double.class) {
-        return 0.0;
-      }
-      if (type == boolean.class) {
-        return false;
-      }
-      if (type == byte.class) {
-        return (byte) 0;
-      }
-      if (type == short.class) {
-        return (short) 0;
-      }
-      if (type == char.class) {
-        return (char) 0;
-      }
-      if (type == float.class) {
-        return 0f;
-      }
+      if (type == int.class)     return 0;
+      if (type == long.class)    return 0L;
+      if (type == double.class)  return 0.0;
+      if (type == boolean.class) return false;
+      if (type == byte.class)    return (byte) 0;
+      if (type == short.class)   return (short) 0;
+      if (type == char.class)    return (char) 0;
+      if (type == float.class)   return 0f;
       return null;
     }
 
-    @SuppressWarnings("unused")
-    private static boolean valueCheck(Object v1, Object v2) {
-      return v1 == v2;
-    }
-
-    @SuppressWarnings("unused")
-    private static void notConstant(Object o) {
-      throw new IllegalStateException("the receiver is not constant");
-    }
+    @SuppressWarnings("unused") private static boolean valueCheck(Object v1, Object v2) { return v1 == v2; }
+    @SuppressWarnings("unused") private static void    notConstant(Object o)            { throw new IllegalStateException("the receiver is not constant"); }
   }
 }
